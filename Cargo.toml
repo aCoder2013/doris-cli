@@ -1,0 +1,32 @@
+[package]
+name = "doris-cli"
+version = "0.1.0"
+edition = "2021"
+description = "A full-scenario operations CLI for Apache Doris: deploy, scale, and maintain clusters"
+license = "Apache-2.0"
+repository = "https://github.com/acoder2013/doris-cli"
+
+[[bin]]
+name = "dcli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time"] }
+mysql_async = { version = "0.34", default-features = false, features = ["default-rustls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+comfy-table = "7"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
