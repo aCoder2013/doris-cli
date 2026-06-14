@@ -13,7 +13,7 @@ pub async fn run(cli: &Cli, cmd: &ConfigCmd) -> Result<()> {
 }
 
 fn init(cli: &Cli, force: bool) -> Result<()> {
-    let path = Config::resolve_path(cli.config.as_deref())
+    let path = Config::resolve_path(cli.config.as_deref(), cli.profile.as_deref())
         .context("could not determine config path")?;
     if path.exists() && !force {
         output::warn(&format!(

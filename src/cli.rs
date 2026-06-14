@@ -13,6 +13,10 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
 
+    /// Use a named cluster profile (~/.doris-cli/profiles/<name>.yaml) for this command.
+    #[arg(short = 'p', long, global = true)]
+    pub profile: Option<String>,
+
     /// Output format: table or json.
     #[arg(short, long, global = true, default_value = "table")]
     pub format: String,
@@ -42,6 +46,10 @@ pub enum Command {
     /// Manage the doris-cli configuration file.
     #[command(subcommand)]
     Config(ConfigCmd),
+
+    /// Manage named cluster profiles (multi-cluster switching).
+    #[command(subcommand)]
+    Profile(ProfileCmd),
 
     /// Inspect overall cluster state (frontends & backends).
     #[command(subcommand)]
@@ -73,6 +81,43 @@ pub enum ConfigCmd {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum ProfileCmd {
+    /// List available profiles, marking the active one.
+    List,
+    /// Show the currently active profile.
+    Current,
+    /// Create a new profile (writes a sample config to profiles/<name>.yaml).
+    Add {
+        /// Profile name.
+        name: String,
+        /// Seed the new profile from the current config instead of the sample.
+        #[arg(long)]
+        from_current: bool,
+        /// Overwrite if the profile already exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Switch the active profile used by subsequent commands.
+    Use {
+        /// Profile name.
+        name: String,
+    },
+    /// Remove a profile.
+    Remove {
+        /// Profile name.
+        name: String,
+        /// Skip the confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Print the resolved configuration of a profile (defaults to active/current).
+    Show {
+        /// Profile name (defaults to the active profile).
+        name: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ClusterCmd {
     /// Summary of FE and BE health.
     Status,
@@ -97,6 +142,10 @@ pub enum OpsCmd {
     /// Show or toggle tablet load-balancing (disable_balance).
     #[command(subcommand)]
     Balance(BalanceCmd),
+    /// Inspect missing rowset versions via BE compaction/show (read-only).
+    VersionGaps(VersionGapsArgs),
+    /// Pad empty rowsets on BE to close version gaps (single-replica recovery; data in gaps is lost).
+    PadRowset(PadRowsetArgs),
 }
 
 #[derive(Debug, Args)]
@@ -110,6 +159,41 @@ pub struct TabletsArgs {
     /// Only show tablets that are not healthy (default: true).
     #[arg(long, default_value_t = true)]
     pub unhealthy_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct VersionGapsArgs {
+    /// Database name.
+    #[arg(long)]
+    pub db: String,
+    /// Table name.
+    #[arg(long)]
+    pub table: String,
+    /// Only inspect replicas with STATUS != OK (default: true).
+    #[arg(long, default_value_t = true)]
+    pub unhealthy_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct PadRowsetArgs {
+    /// Database name (with --table; omit when using --tablet-id + --backend-id).
+    #[arg(long)]
+    pub db: Option<String>,
+    /// Table name.
+    #[arg(long)]
+    pub table: Option<String>,
+    /// Target a single tablet (requires --backend-id).
+    #[arg(long)]
+    pub tablet_id: Option<String>,
+    /// Backend id for --tablet-id.
+    #[arg(long)]
+    pub backend_id: Option<String>,
+    /// Show planned pads only; do not call BE pad_rowset.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Skip the confirmation prompt.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]

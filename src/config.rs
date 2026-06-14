@@ -296,20 +296,29 @@ fn default_install_dir() -> String {
 }
 
 impl Config {
-    /// Resolve the config path: explicit `--config`, then `DORIS_CLI_CONFIG`,
-    /// then `~/.doris-cli/cluster.yaml`.
-    pub fn resolve_path(explicit: Option<&Path>) -> Option<PathBuf> {
+    /// Resolve the config path in priority order:
+    /// explicit `--config`, then `--profile <name>`, then `DORIS_CLI_CONFIG`,
+    /// then the active profile (set via `dcli profile use`), then `~/.doris-cli/cluster.yaml`.
+    pub fn resolve_path(explicit: Option<&Path>, profile: Option<&str>) -> Option<PathBuf> {
         if let Some(p) = explicit {
             return Some(p.to_path_buf());
+        }
+        if let Some(name) = profile {
+            return profile_path(name);
         }
         if let Ok(env) = std::env::var("DORIS_CLI_CONFIG") {
             return Some(PathBuf::from(env));
         }
+        if let Some(name) = active_profile() {
+            if let Some(p) = profile_path(&name) {
+                return Some(p);
+            }
+        }
         dirs::home_dir().map(|h| h.join(".doris-cli").join("cluster.yaml"))
     }
 
-    pub fn load(explicit: Option<&Path>) -> Result<Self> {
-        let path = Self::resolve_path(explicit)
+    pub fn load(explicit: Option<&Path>, profile: Option<&str>) -> Result<Self> {
+        let path = Self::resolve_path(explicit, profile)
             .context("could not determine config path (no home dir?)")?;
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!(
@@ -343,6 +352,89 @@ impl Config {
     pub fn sample_yaml() -> &'static str {
         SAMPLE_YAML
     }
+}
+
+/// Base directory for doris-cli state (`~/.doris-cli`).
+pub fn config_home() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".doris-cli"))
+}
+
+/// Directory holding named cluster profiles (`~/.doris-cli/profiles`).
+pub fn profiles_dir() -> Option<PathBuf> {
+    config_home().map(|h| h.join("profiles"))
+}
+
+/// File recording the name of the currently active profile.
+fn active_profile_file() -> Option<PathBuf> {
+    config_home().map(|h| h.join("active_profile"))
+}
+
+/// Path to a named profile's YAML file.
+pub fn profile_path(name: &str) -> Option<PathBuf> {
+    profiles_dir().map(|d| d.join(format!("{name}.yaml")))
+}
+
+/// The currently active profile name, if any.
+pub fn active_profile() -> Option<String> {
+    let p = active_profile_file()?;
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Set the active profile (must exist).
+pub fn set_active_profile(name: &str) -> Result<()> {
+    let path =
+        profile_path(name).context("could not determine profiles dir (no home dir?)")?;
+    anyhow::ensure!(
+        path.exists(),
+        "profile '{name}' does not exist (create it with `dcli profile add {name}`)"
+    );
+    let marker = active_profile_file().context("could not determine config home")?;
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&marker, name)
+        .with_context(|| format!("failed to write {}", marker.display()))?;
+    Ok(())
+}
+
+/// Clear the active profile pointer (fall back to default cluster.yaml).
+pub fn clear_active_profile() -> Result<()> {
+    if let Some(marker) = active_profile_file() {
+        if marker.exists() {
+            std::fs::remove_file(&marker)
+                .with_context(|| format!("failed to remove {}", marker.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// List available profile names (sorted), reading `*.yaml` from the profiles dir.
+pub fn list_profiles() -> Result<Vec<String>> {
+    let dir = match profiles_dir() {
+        Some(d) => d,
+        None => return Ok(Vec::new()),
+    };
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                names.push(stem.to_string());
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 const SAMPLE_YAML: &str = r#"# doris-cli cluster configuration

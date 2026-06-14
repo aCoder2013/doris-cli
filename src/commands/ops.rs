@@ -15,6 +15,12 @@ pub async fn run(cli: &Cli, cmd: &OpsCmd, format: Format) -> Result<()> {
         OpsCmd::CancelRepair(args) => repair(&fe, args, true).await,
         OpsCmd::DecommissionStatus => decommission_status(&fe, format).await,
         OpsCmd::Balance(b) => balance(&fe, b, format).await,
+        OpsCmd::VersionGaps(args) => {
+            crate::commands::version_gap::version_gaps(cli, args, format).await
+        }
+        OpsCmd::PadRowset(args) => {
+            crate::commands::version_gap::pad_rowset(cli, args, format).await
+        }
     }
 }
 

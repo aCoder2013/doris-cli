@@ -169,7 +169,7 @@ fn default_deploy() -> DeployConfig {
 }
 
 fn write_config(cli: &Cli, cfg: &Config) -> Result<()> {
-    let path = Config::resolve_path(cli.config.as_deref())
+    let path = Config::resolve_path(cli.config.as_deref(), cli.profile.as_deref())
         .context("could not determine config path")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -438,7 +438,7 @@ async fn init(cli: &Cli) -> Result<()> {
 
     write_config(cli, &cfg)?;
 
-    let path = Config::resolve_path(cli.config.as_deref())
+    let path = Config::resolve_path(cli.config.as_deref(), cli.profile.as_deref())
         .context("could not determine config path")?;
     output::ok(&format!("wrote topology to {}", path.display()));
     println!(
