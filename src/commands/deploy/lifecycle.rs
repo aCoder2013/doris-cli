@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::client::FeClient;
 use crate::config::{Config, DeployArchitecture};
 use crate::output;
+use crate::release;
 use crate::ssh::Ssh;
 
 /// Shared deploy context derived from config.
@@ -93,6 +94,10 @@ pub async fn install(cfg: &Config) -> Result<()> {
         .as_ref()
         .and_then(|d| non_empty(&d.package))
         .ok_or_else(|| anyhow::anyhow!("deploy.package is not set in config"))?;
+
+    if !package.starts_with("http://") && !package.starts_with("https://") {
+        release::ensure_local_package(Path::new(&package))?;
+    }
 
     let hosts = topo.all_hosts();
     output::info(&format!(

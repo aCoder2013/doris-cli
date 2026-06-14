@@ -312,7 +312,10 @@ impl Config {
         let path = Self::resolve_path(explicit)
             .context("could not determine config path (no home dir?)")?;
         let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read config file: {}", path.display()))?;
+            .with_context(|| format!(
+                "failed to read config file: {} (use --config or DORIS_CLI_CONFIG when running as another user, e.g. sudo)",
+                path.display()
+            ))?;
         let cfg: Config = serde_yaml::from_str(&raw)
             .with_context(|| format!("failed to parse config file: {}", path.display()))?;
         Ok(cfg)
@@ -357,7 +360,7 @@ be:
 ssh:                    # optional, only needed for deploy/remote ops
   user: root
   port: 22
-  key: ~/.ssh/id_rsa
+  key: ~/.ssh/id_ed25519   # blank = auto-detect id_ed25519/id_rsa; omit -i if missing
 deploy:                 # optional, only needed for deploy
   architecture: integrated  # integrated | separated (存算一体 | 存算分离)
   method: manual            # manual | kubernetes | cloud

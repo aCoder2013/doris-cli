@@ -214,6 +214,103 @@ pub fn cached_package_path(version: &str, arch: BinaryArch) -> PathBuf {
         .join(format!("apache-doris-{version}-bin-{}.tar.gz", arch.slug()))
 }
 
+fn size_sidecar_path(package: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.size", package.display()))
+}
+
+fn read_size_sidecar(package: &Path) -> Option<u64> {
+    let sidecar = size_sidecar_path(package);
+    let raw = std::fs::read_to_string(&sidecar).ok()?;
+    raw.trim().parse().ok()
+}
+
+fn write_size_sidecar(package: &Path, size: u64) -> Result<()> {
+    let sidecar = size_sidecar_path(package);
+    std::fs::write(&sidecar, size.to_string())
+        .with_context(|| format!("failed to write {}", sidecar.display()))?;
+    Ok(())
+}
+
+fn remove_package_artifacts(path: &Path) {
+    std::fs::remove_file(path).ok();
+    std::fs::remove_file(size_sidecar_path(path)).ok();
+}
+
+/// Verify a local `.tar.gz` package (size + gzip integrity).
+pub fn verify_package_file(path: &Path) -> Result<()> {
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("package not found: {}", path.display()))?;
+    let size = meta.len();
+    anyhow::ensure!(size > 0, "package file is empty: {}", path.display());
+
+    if let Some(expected) = read_size_sidecar(path) {
+        anyhow::ensure!(
+            size == expected,
+            "package size mismatch: got {} bytes, expected {} bytes",
+            size,
+            expected
+        );
+    }
+
+    verify_gzip_integrity(path)?;
+    Ok(())
+}
+
+fn verify_gzip_integrity(path: &Path) -> Result<()> {
+    let output = std::process::Command::new("gzip")
+        .arg("-t")
+        .arg(path)
+        .output()
+        .with_context(|| format!("failed to run gzip -t on {}", path.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let detail = if stderr.is_empty() {
+        "gzip integrity check failed (truncated or corrupt archive)".to_string()
+    } else {
+        stderr
+    };
+    anyhow::bail!(detail)
+}
+
+pub fn package_incomplete_message(path: &Path, detail: &str, version: Option<&str>, arch: Option<BinaryArch>) -> String {
+    let mut msg = format!(
+        "安装包不完整或已损坏: {}\n  原因: {}\n  请删除后重新下载:",
+        path.display(),
+        detail
+    );
+    if let (Some(v), Some(a)) = (version, arch) {
+        msg.push_str(&format!(
+            "\n    dcli deploy download --release {v} --arch {}",
+            a.slug()
+        ));
+    } else {
+        msg.push_str("\n    dcli deploy download --release <version> --arch x64");
+    }
+    msg
+}
+
+async fn fetch_content_length(client: &reqwest::Client, url: &str) -> Option<u64> {
+    client
+        .head(url)
+        .send()
+        .await
+        .ok()
+        .and_then(|r| r.content_length())
+}
+
+/// Verify local package before install; returns actionable error if corrupt.
+pub fn ensure_local_package(path: &Path) -> Result<()> {
+    match verify_package_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let detail = e.to_string();
+            anyhow::bail!(package_incomplete_message(path, &detail, None, None))
+        }
+    }
+}
+
 /// Download a release binary to the cache dir; returns the local path.
 pub async fn download_binary(
     release: &DorisRelease,
@@ -227,9 +324,38 @@ pub async fn download_binary(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+
+    let client = reqwest::Client::builder()
+        .user_agent("doris-cli/0.1")
+        .build()?;
+    let expected_size = fetch_content_length(&client, &url).await;
+
     if path.exists() {
-        eprintln!("• 使用本地缓存: {}", path.display());
-        return Ok(path);
+        if verify_package_file(&path).is_ok() {
+            if let (Some(exp), Some(sidecar)) = (expected_size, read_size_sidecar(&path)) {
+                if exp != sidecar {
+                    eprintln!(
+                        "⚠ 本地包大小与远端不一致 (本地 {} / 远端 {})，将重新下载",
+                        format_bytes(sidecar),
+                        format_bytes(exp)
+                    );
+                    remove_package_artifacts(&path);
+                } else {
+                    eprintln!("• 使用本地缓存: {}", path.display());
+                    return Ok(path);
+                }
+            } else {
+                eprintln!("• 使用本地缓存: {}", path.display());
+                return Ok(path);
+            }
+        } else {
+            eprintln!("⚠ 本地安装包不完整或已损坏，将重新下载");
+            eprintln!(
+                "  {}",
+                package_incomplete_message(&path, "cached file failed integrity check", Some(&release.version), Some(arch))
+            );
+            remove_package_artifacts(&path);
+        }
     }
 
     eprintln!(
@@ -239,9 +365,6 @@ pub async fn download_binary(
         url
     );
 
-    let client = reqwest::Client::builder()
-        .user_agent("doris-cli/0.1")
-        .build()?;
     let mut resp = client
         .get(&url)
         .send()
@@ -250,7 +373,7 @@ pub async fn download_binary(
         .error_for_status()
         .with_context(|| format!("download failed for {url}"))?;
 
-    let total = resp.content_length();
+    let total = resp.content_length().or(expected_size);
     let mut file = tokio::fs::File::create(&path)
         .await
         .with_context(|| format!("failed to create {}", path.display()))?;
@@ -284,6 +407,35 @@ pub async fn download_binary(
         .context("failed to flush package file")?;
     render_download_progress(downloaded, total, started);
     finish_download_progress();
+
+    if let Some(exp) = total {
+        if downloaded != exp {
+            remove_package_artifacts(&path);
+            anyhow::bail!(
+                "{}",
+                package_incomplete_message(
+                    &path,
+                    &format!(
+                        "download incomplete: got {} bytes, expected {}",
+                        downloaded,
+                        exp
+                    ),
+                    Some(&release.version),
+                    Some(arch),
+                )
+            );
+        }
+        write_size_sidecar(&path, exp)?;
+    }
+
+    if let Err(e) = verify_package_file(&path) {
+        remove_package_artifacts(&path);
+        anyhow::bail!(
+            "{}",
+            package_incomplete_message(&path, &e.to_string(), Some(&release.version), Some(arch))
+        );
+    }
+
     Ok(path)
 }
 
@@ -390,5 +542,15 @@ mod tests {
     fn normalizes_tag() {
         assert_eq!(normalize_version("4.0.4-release"), "4.0.4");
         assert_eq!(normalize_version("v4.1.1"), "4.1.1");
+    }
+
+    #[test]
+    fn rejects_truncated_gzip() {
+        let dir = std::env::temp_dir().join("doris-cli-test");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("truncated.tar.gz");
+        std::fs::write(&path, b"not a real gzip").unwrap();
+        assert!(verify_package_file(&path).is_err());
+        std::fs::remove_file(&path).ok();
     }
 }

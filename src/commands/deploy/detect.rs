@@ -3,7 +3,7 @@ use comfy_table::{presets::UTF8_FULL, ContentArrangement, Table};
 use std::collections::BTreeMap;
 
 use crate::config::{Config, DeployArchitecture};
-use crate::ssh::Ssh;
+use crate::ssh::{self, Ssh};
 
 /// Parsed machine facts for one host.
 #[derive(Debug, Clone, Default)]
@@ -40,6 +40,8 @@ echo "max_map_count=$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo 0)"
 echo "swappiness=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo -1)"
 echo "overcommit=$(cat /proc/sys/vm/overcommit_memory 2>/dev/null || echo -1)"
 echo "ulimit_nofile=$(ulimit -n)"
+id="{install_dir}"
+if mkdir -p "$id" 2>/dev/null; then echo "install_dir_ok=yes"; else echo "install_dir_ok=no"; fi
 "#
     )
 }
@@ -80,7 +82,13 @@ pub async fn detect_all(cfg: &Config) -> Result<Vec<HostInfo>> {
                     }
                 }
                 Ok(out) => {
-                    info.error = Some(out.stderr.trim().to_string());
+                    let stderr = out.stderr.trim();
+                    let hint = ssh::ssh_failure_hint(&host, ssh.username(), stderr);
+                    info.error = Some(if stderr.is_empty() {
+                        hint
+                    } else {
+                        format!("{stderr}\n  hint: {hint}")
+                    });
                 }
                 Err(e) => {
                     info.error = Some(e.to_string());
@@ -238,6 +246,22 @@ fn check_host(i: &HostInfo) -> Vec<Check> {
             String::new()
         },
     });
+
+    let install_ok = i.get("install_dir_ok");
+    if install_ok.is_empty() {
+        // older detect script without this field
+    } else {
+        checks.push(Check {
+            name: "install_dir",
+            value: install_ok.into(),
+            severity: if install_ok == "yes" { Severity::Ok } else { Severity::Fail },
+            note: if install_ok == "yes" {
+                String::new()
+            } else {
+                "install_dir not writable; use ~/doris or run SSH as root".into()
+            },
+        });
+    }
 
     checks
 }

@@ -39,12 +39,22 @@ impl Ssh {
                 connect_timeout: 10,
             },
             None => Ssh {
-                user: "root".into(),
+                user: default_local_ssh_user(),
                 port: 22,
                 key: None,
                 connect_timeout: 10,
             },
         }
+    }
+
+    /// Best default private key path for prompts / sample config.
+    pub fn default_key_hint() -> String {
+        discover_ssh_key()
+            .unwrap_or_else(|| "~/.ssh/id_ed25519".into())
+    }
+
+    pub fn username(&self) -> &str {
+        &self.user
     }
 
     fn common_opts(&self) -> Vec<String> {
@@ -56,9 +66,9 @@ impl Ssh {
             "-o".into(),
             format!("ConnectTimeout={}", self.connect_timeout),
         ];
-        if let Some(k) = &self.key {
+        if let Some(k) = resolve_ssh_key(self.key.as_ref()) {
             a.push("-i".into());
-            a.push(expand_tilde(k));
+            a.push(k);
         }
         a
     }
@@ -136,5 +146,72 @@ fn expand_tilde(path: &str) -> String {
             return home.join(rest).to_string_lossy().to_string();
         }
     }
+    if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.to_string_lossy().to_string();
+        }
+    }
     path.to_string()
+}
+
+/// Find the first usable private key in ~/.ssh (ed25519 preferred).
+pub fn discover_ssh_key() -> Option<String> {
+    let home = dirs::home_dir()?;
+    let ssh_dir = home.join(".ssh");
+    for name in ["id_ed25519", "id_rsa", "id_ecdsa"] {
+        let p = ssh_dir.join(name);
+        if p.is_file() {
+            return Some(format!("~/.ssh/{name}"));
+        }
+    }
+    None
+}
+
+/// Resolve which key to pass to ssh. Skips missing configured paths (avoids openssh warnings).
+pub fn resolve_ssh_key(configured: Option<&String>) -> Option<String> {
+    if let Some(k) = configured {
+        let trimmed = k.trim();
+        if trimmed.is_empty() {
+            return discover_ssh_key().as_deref().map(expand_tilde);
+        }
+        let expanded = expand_tilde(trimmed);
+        if std::path::Path::new(&expanded).is_file() {
+            return Some(expanded);
+        }
+        // Configured path missing — fall back to agent / other keys.
+        return discover_ssh_key().as_deref().map(expand_tilde);
+    }
+    discover_ssh_key().as_deref().map(expand_tilde)
+}
+
+fn default_local_ssh_user() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "root".into())
+}
+
+/// Actionable hint when SSH to a host fails during deploy precheck.
+pub fn ssh_failure_hint(host: &str, user: &str, stderr: &str) -> String {
+    let mut hints = Vec::new();
+    if stderr.contains("not accessible") || stderr.contains("No such file") {
+        hints.push(format!(
+            "SSH key missing; set ssh.key in config or run `dcli deploy init` again (detected: {})",
+            default_key_hint_display()
+        ));
+    }
+    if stderr.contains("Permission denied") {
+        hints.push(format!(
+            "try ssh.user='{local}' instead of '{user}' for localhost/WSL",
+            local = default_local_ssh_user()
+        ));
+        hints.push(format!("test manually: ssh -o BatchMode=yes {user}@{host} true"));
+    }
+    if hints.is_empty() {
+        hints.push(format!("test manually: ssh {user}@{host} true"));
+    }
+    hints.join("; ")
+}
+
+fn default_key_hint_display() -> String {
+    Ssh::default_key_hint()
 }

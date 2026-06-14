@@ -298,6 +298,16 @@ fn random_cluster_id() -> i64 {
     ((seed >> 15) as i64) | (seed as i64 & 0x7fff)
 }
 
+fn default_install_dir_for_user(ssh_user: &str) -> String {
+    if ssh_user == "root" {
+        "/opt/doris".into()
+    } else if let Ok(home) = std::env::var("HOME") {
+        format!("{home}/doris")
+    } else {
+        "~/doris".into()
+    }
+}
+
 /// Interactive wizard: collect FE/BE IPs, choose the leader, persist to the config file.
 async fn init(cli: &Cli) -> Result<()> {
     println!("doris-cli deploy wizard — define your cluster topology\n");
@@ -366,7 +376,12 @@ async fn init(cli: &Cli) -> Result<()> {
         None
     };
 
-    let install_dir = prompt_line("Install directory", "/opt/doris")?;
+    let default_ssh_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "root".into());
+    let ssh_user = prompt_line("SSH user", &default_ssh_user)?;
+    let default_install = default_install_dir_for_user(&ssh_user);
+    let install_dir = prompt_line("Install directory", &default_install)?;
     let dl_yn = prompt_line("Download official Doris package now? (y/n)", "y")?;
     let (version, arch_slug, package) = if matches!(dl_yn.to_ascii_lowercase().as_str(), "y" | "yes") {
         let (v, a, p) = prompt_version_and_download().await?;
@@ -379,8 +394,12 @@ async fn init(cli: &Cli) -> Result<()> {
     };
     let java_home = prompt_line("JAVA_HOME (blank to auto-detect)", "")?;
     let priority_networks = prompt_line("priority_networks CIDR (blank to skip)", "")?;
-    let ssh_user = prompt_line("SSH user", "root")?;
-    let ssh_key = prompt_line("SSH private key path", "~/.ssh/id_rsa")?;
+    let default_key = crate::ssh::Ssh::default_key_hint();
+    let ssh_key_raw = prompt_line(
+        "SSH private key path (blank = auto-detect)",
+        &default_key,
+    )?;
+    let ssh_key = opt(ssh_key_raw);
     let fe_user = prompt_line("Doris FE user", "root")?;
     let fe_password = prompt_line("Doris FE password (blank if none)", "")?;
 
@@ -401,7 +420,7 @@ async fn init(cli: &Cli) -> Result<()> {
     cfg.ssh = Some(crate::config::SshConfig {
         user: ssh_user,
         port: 22,
-        key: Some(ssh_key),
+        key: ssh_key,
     });
     cfg.deploy = Some(DeployConfig {
         architecture,
