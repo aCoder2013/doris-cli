@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(short = 'p', long, global = true)]
     pub profile: Option<String>,
 
+    /// Use a cluster saved in the encrypted local cluster store.
+    #[arg(long, global = true)]
+    pub cluster: Option<String>,
+
     /// Output format: table or json.
     #[arg(short, long, global = true, default_value = "table")]
     pub format: String,
@@ -51,6 +55,10 @@ pub enum Command {
     #[command(subcommand)]
     Profile(ProfileCmd),
 
+    /// Manage encrypted local cluster metadata.
+    #[command(subcommand)]
+    Clusters(ClustersCmd),
+
     /// Inspect overall cluster state (frontends & backends).
     #[command(subcommand)]
     Cluster(ClusterCmd),
@@ -66,6 +74,9 @@ pub enum Command {
     /// Deploy / lifecycle management of FE & BE processes (experimental).
     #[command(subcommand)]
     Deploy(DeployCmd),
+
+    /// Open the interactive terminal control plane.
+    Tui,
 }
 
 #[derive(Debug, Subcommand)]
@@ -114,6 +125,44 @@ pub enum ProfileCmd {
     Show {
         /// Profile name (defaults to the active profile).
         name: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ClustersCmd {
+    /// List saved clusters, marking the active one.
+    List,
+    /// Add or update a saved cluster through prompts.
+    Add {
+        /// Cluster name. Prompts if omitted.
+        name: Option<String>,
+        /// Seed the saved cluster from the currently resolved config.
+        #[arg(long)]
+        from_current: bool,
+        /// Overwrite if the saved cluster already exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Switch the active saved cluster.
+    Use {
+        /// Saved cluster name.
+        name: String,
+    },
+    /// Remove a saved cluster.
+    Remove {
+        /// Saved cluster name.
+        name: String,
+        /// Skip the confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Show saved cluster metadata. Passwords are redacted by default.
+    Show {
+        /// Saved cluster name (defaults to active saved cluster).
+        name: Option<String>,
+        /// Print secrets instead of redacting them.
+        #[arg(long)]
+        reveal_secrets: bool,
     },
 }
 
